@@ -1,0 +1,71 @@
+site: tiktok
+name: user
+description: Get recent videos from a TikTok user
+domain: www.tiktok.com
+
+args:
+  username:
+    type: str
+    required: true
+    positional: true
+    description: TikTok username (without @)
+  limit:
+    type: int
+    default: 10
+    description: Number of videos
+
+pipeline:
+  - navigate:
+      url: https://www.tiktok.com/explore
+      settleMs: 5000
+
+  - evaluate: |
+      (async () => {
+        const username = ${{ args.username | json }};
+        const limit = ${{ args.limit }};
+        const res = await fetch('https://www.tiktok.com/@' + encodeURIComponent(username), { credentials: 'include' });
+        if (!res.ok) throw new Error('User not found: ' + username);
+        const html = await res.text();
+        const idx = html.indexOf('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+        if (idx === -1) throw new Error('Could not parse user data');
+        const start = html.indexOf('>', idx) + 1;
+        const end = html.indexOf('</script>', start);
+        const data = JSON.parse(html.substring(start, end));
+        const scope = data['__DEFAULT_SCOPE__'] || {};
+        const ud = scope['webapp.user-detail'] || {};
+        const itemList = (ud.userInfo && ud.userInfo.user && ud.userInfo.user.itemList) || [];
+        // If itemList not in rehydration, try the post list from video tab
+        const vids = scope['webapp.video-detail'] ? [scope['webapp.video-detail']] : [];
+        const posts = itemList.length > 0 ? itemList : vids;
+        if (posts.length === 0) {
+          // Fallback: scrape from user page DOM
+          const r2 = await fetch('/api/post/item_list/?secUid=&count=' + limit + '&aid=1988', { credentials: 'include' });
+          if (r2.ok) {
+            const d2 = await r2.json();
+            const items = d2.itemList || [];
+            return items.slice(0, limit).map(function(v, i) {
+              return {
+                index: i + 1,
+                desc: (v.desc || '').replace(/\n/g, ' ').substring(0, 100),
+                plays: v.stats && v.stats.playCount || 0,
+                likes: v.stats && v.stats.diggCount || 0,
+                comments: v.stats && v.stats.commentCount || 0,
+                date: v.createTime ? new Date(v.createTime * 1000).toLocaleDateString() : '',
+              };
+            });
+          }
+          return [{ index: 1, desc: 'Use search command to find videos by this user', plays: '-', likes: '-', comments: '-', date: '-' }];
+        }
+        return posts.slice(0, limit).map(function(v, i) {
+          return {
+            index: i + 1,
+            desc: (v.desc || '').replace(/\n/g, ' ').substring(0, 100),
+            plays: v.stats && v.stats.playCount || 0,
+            likes: v.stats && v.stats.diggCount || 0,
+            comments: v.stats && v.stats.commentCount || 0,
+            date: v.createTime ? new Date(v.createTime * 1000).toLocaleDateString() : '',
+          };
+        });
+      })()
+
+columns: [index, desc, plays, likes, comments, date]
